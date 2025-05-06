@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 SERVER_URL = os.environ.get('REMOTE_SERVER_URL', 'https://your-render-app-name.onrender.com') # REPLACE!
-ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', 'change_this_password_too_server') # MUST MATCH SERVER
+ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', '1') # MUST MATCH SERVER
 CLIENT_TARGET_FPS = int(os.environ.get('CLIENT_TARGET_FPS', 2)) # DRASTICALLY REDUCED FPS FOR TESTING
 JPEG_QUALITY = int(os.environ.get('JPEG_QUALITY', 40)) # REDUCED QUALITY FOR TESTING
 SCROLL_SENSITIVITY_VERTICAL = 20
