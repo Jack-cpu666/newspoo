@@ -3,261 +3,226 @@ import time
 import os
 import io
 import threading
-import logging
-from PIL import Image # type: ignore
-import mss # type: ignore
-import pyautogui # type: ignore
-import platform # For OS-specific key mapping (e.g., Meta key)
-
-# --- Configuration ---
-SERVER_URL = os.environ.get('REMOTE_SERVER_URL', 'https://newspoogunicorn-worker-class-eventlet-w.onrender.com')
-ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', 'change_this_password_too')
-CLIENT_TARGET_FPS = int(os.environ.get('CLIENT_TARGET_FPS', 15))
-JPEG_QUALITY = int(os.environ.get('JPEG_QUALITY', 75)) # 0-100 (higher quality = larger size)
-SCROLL_SENSITIVITY_VERTICAL = 20 # Adjust as needed for vertical scroll speed
-SCROLL_SENSITIVITY_HORIZONTAL = 20 # Adjust as needed for horizontal scroll speed
+import logging # Using Python's logging module
+from PIL import Image
+import mss
+import pyautogui
+import platform
 
 # --- Logging Setup ---
-# Using a more descriptive format, good for multi-threaded apps
-log_format = '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s'
-logging.basicConfig(level=logging.INFO, format=log_format)
+log_format = '%(asctime)s - %(threadName)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
+logging.basicConfig(level=logging.INFO, format=log_format, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
+# --- Configuration ---
+SERVER_URL = os.environ.get('REMOTE_SERVER_URL', 'https://your-render-app-name.onrender.com') # REPLACE!
+ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', 'change_this_password_too_server') # MUST MATCH SERVER
+CLIENT_TARGET_FPS = int(os.environ.get('CLIENT_TARGET_FPS', 2)) # DRASTICALLY REDUCED FPS FOR TESTING
+JPEG_QUALITY = int(os.environ.get('JPEG_QUALITY', 40)) # REDUCED QUALITY FOR TESTING
+SCROLL_SENSITIVITY_VERTICAL = 20
+SCROLL_SENSITIVITY_HORIZONTAL = 20
+
 # --- Global State Variables ---
-sio = socketio.Client(reconnection_attempts=10, reconnection_delay=3, logger=False, engineio_logger=False)
+sio = socketio.Client(reconnection_attempts=10, reconnection_delay=5, logger=True, engineio_logger=True)
 is_registered = False
-screen_capture_stop_event = threading.Event() # Event to signal the capture thread to stop
-capture_thread_obj: threading.Thread | None = None # To hold the screen capture thread object
+screen_capture_stop_event = threading.Event()
+capture_thread_obj: threading.Thread | None = None
 
-# --- PyAutoGUI Configuration ---
-pyautogui.FAILSAFE = False  # IMPORTANT: Set to False to allow control when mouse is at screen edge.
-                           # Be cautious, as this means an errant script can't be stopped by moving mouse to corner.
-pyautogui.PAUSE = 0.0      # No artificial pause between PyAutoGUI actions by default.
-
-# --- Key Mapping: JavaScript event.key to PyAutoGUI ---
+# --- PyAutoGUI Configuration & Key Mapping (same as before) ---
+pyautogui.FAILSAFE = False
+pyautogui.PAUSE = 0.0
 PYAUTOGUI_SPECIAL_KEYS_MAP = {
     "Control": "ctrl", "Shift": "shift", "Alt": "alt",
-    "Meta": "command" if platform.system() == "Darwin" else "win", # 'command' on macOS, 'win' on Windows/Linux
+    "Meta": "command" if platform.system() == "Darwin" else "win",
     "ArrowUp": "up", "ArrowDown": "down", "ArrowLeft": "left", "ArrowRight": "right",
     "Enter": "enter", "Escape": "esc", "Backspace": "backspace", "Delete": "delete",
-    "Tab": "tab", " ": "space", # Note: ' ' is for event.key == " "
+    "Tab": "tab", " ": "space",
     "F1": "f1", "F2": "f2", "F3": "f3", "F4": "f4", "F5": "f5", "F6": "f6",
     "F7": "f7", "F8": "f8", "F9": "f9", "F10": "f10", "F11": "f11", "F12": "f12",
     "PageUp": "pageup", "PageDown": "pagedown", "Home": "home", "End": "end",
     "Insert": "insert", "CapsLock": "capslock", "NumLock": "numlock", "ScrollLock": "scrolllock",
     "PrintScreen": "printscreen",
-    # Add other mappings as identified from JS event.key values
 }
-
 def map_key_to_pyautogui(key_name_from_js: str) -> str | None:
-    """Maps a JavaScript event.key string to a PyAutoGUI compatible key string."""
     if key_name_from_js in PYAUTOGUI_SPECIAL_KEYS_MAP:
         return PYAUTOGUI_SPECIAL_KEYS_MAP[key_name_from_js]
-
-    if len(key_name_from_js) == 1: # Single character keys (e.g., 'a', 'A', '1', '$')
-        return key_name_from_js # PyAutoGUI handles these directly, case matters for typewrite, not for keyDown/Up
-
-    # For other unmapped keys, try lowercase version (pyautogui often uses lowercase for its named keys)
+    if len(key_name_from_js) == 1: return key_name_from_js
     lower_key = key_name_from_js.lower()
-    if lower_key in pyautogui.KEY_NAMES: # pyautogui.KEY_NAMES is a list of valid key strings
-        return lower_key
-    
-    logger.warning(f"Unmapped key: '{key_name_from_js}'. Returning original. May not work as expected.")
-    return key_name_from_js # Fallback, might work for some keys pyautogui recognizes by other names
-
+    if lower_key in pyautogui.KEY_NAMES: return lower_key
+    logger.warning(f"Unmapped key: '{key_name_from_js}'.")
+    return key_name_from_js
 
 # --- SocketIO Event Handlers ---
 @sio.event
 def connect():
-    logger.info(f"Successfully connected to server. SID: {sio.sid}")
-    logger.info("Attempting to register client...")
-    sio.emit('register_client', {'token': ACCESS_PASSWORD})
+    logger.info(f"CLIENT_SOCKET_CONNECT: Successfully connected to server. SID: {sio.sid}. Attempting registration.")
+    try:
+        sio.emit('register_client', {'token': ACCESS_PASSWORD})
+    except Exception as e:
+        logger.error(f"CLIENT_SOCKET_CONNECT: Error emitting register_client: {e}")
 
 @sio.event
 def connect_error(data):
-    logger.error(f"Connection failed: {data}")
+    logger.error(f"CLIENT_SOCKET_CONNECT_ERROR: Connection failed: {data}")
     global is_registered
     is_registered = False
-    screen_capture_stop_event.set() # Signal capture thread to stop if it was running
+    screen_capture_stop_event.set()
 
 @sio.event
-def disconnect():
-    logger.info("Disconnected from server.")
+def disconnect(reason=None): # reason might be provided by server or transport
+    logger.warning(f"CLIENT_SOCKET_DISCONNECT: Disconnected from server. Reason: {reason if reason else 'N/A'}")
     global is_registered
     is_registered = False
-    screen_capture_stop_event.set() # Ensure capture thread stops
+    screen_capture_stop_event.set()
 
 @sio.on('registration_success')
 def on_registration_success():
     global is_registered, capture_thread_obj
-    if is_registered: # Avoid issues if multiple success messages are received
-        logger.info("Already registered. Ignoring redundant registration_success event.")
+    if is_registered:
+        logger.info("CLIENT_REG_SUCCESS: Already registered. Ignoring.")
         return
-
-    logger.info("Client registration successful with server.")
+    logger.info("CLIENT_REG_SUCCESS: Client registration successful.")
     is_registered = True
-    screen_capture_stop_event.clear() # Clear the stop event for a new capture session
-
-    # Start screen capture thread if not already running
+    screen_capture_stop_event.clear()
     if capture_thread_obj is None or not capture_thread_obj.is_alive():
-        logger.info("Starting screen capture thread.")
+        logger.info("CLIENT_REG_SUCCESS: Starting screen capture thread.")
         capture_thread_obj = threading.Thread(target=screen_capture_loop, name="ScreenCaptureThread", daemon=True)
         capture_thread_obj.start()
     else:
-        # This case should ideally not be hit if logic is correct, but good to log
-        logger.warning("Screen capture thread was already running upon registration success.")
+        logger.warning("CLIENT_REG_SUCCESS: Capture thread was already running.")
 
 
 @sio.on('registration_fail')
 def on_registration_fail(data):
     global is_registered
-    logger.error(f"Client registration failed: {data.get('message', 'No message received from server.')}")
+    logger.error(f"CLIENT_REG_FAIL: {data.get('message', 'No message')}")
     is_registered = False
     screen_capture_stop_event.set()
-    sio.disconnect() # Disconnect if registration fails
+    sio.disconnect()
 
 @sio.on('command')
 def on_command(data: dict):
     if not is_registered:
-        logger.warning("Received command while not registered with server. Ignoring.")
+        logger.warning("CLIENT_CMD_RECV_UNREG: Received command while not registered. Ignoring.")
         return
-
     action = data.get('action')
-    # logger.debug(f"Received command: {data}") # Uncomment for verbose command logging
-
+    logger.debug(f"CLIENT_CMD_RECV: {data}")
     try:
-        if action == 'move':
-            pyautogui.moveTo(data['x'], data['y'], duration=0) # Instant move
-        elif action == 'click':
-            button = data.get('button', 'left').lower() # Default to left click
-            pyautogui.click(x=data['x'], y=data['y'], button=button)
+        if action == 'move': pyautogui.moveTo(data['x'], data['y'], duration=0)
+        elif action == 'click': pyautogui.click(x=data['x'], y=data['y'], button=data.get('button', 'left').lower())
         elif action == 'scroll':
-            dx = data.get('dx', 0) # Horizontal scroll delta
-            dy = data.get('dy', 0) # Vertical scroll delta
-
-            # Server: dy > 0 is scroll down. PyAutoGUI: positive scrolls UP.
-            if dy != 0:
-                pyautogui.scroll(dy * SCROLL_SENSITIVITY_VERTICAL * -1)
-            # Server: dx > 0 is scroll right. PyAutoGUI: positive hscrolls RIGHT.
-            if dx != 0:
-                pyautogui.hscroll(dx * SCROLL_SENSITIVITY_HORIZONTAL)
+            dy, dx = data.get('dy', 0), data.get('dx', 0)
+            if dy != 0: pyautogui.scroll(dy * SCROLL_SENSITIVITY_VERTICAL * -1)
+            if dx != 0: pyautogui.hscroll(dx * SCROLL_SENSITIVITY_HORIZONTAL)
         elif action == 'keydown':
-            key_name_js = data['key']
-            pg_key = map_key_to_pyautogui(key_name_js)
-            if pg_key:
-                # logger.info(f"KeyDown: JS='{key_name_js}', PyAutoGUI='{pg_key}'")
-                pyautogui.keyDown(pg_key)
-            else:
-                logger.warning(f"KeyDown: No PyAutoGUI mapping for JS key '{key_name_js}'")
+            pg_key = map_key_to_pyautogui(data['key'])
+            if pg_key: pyautogui.keyDown(pg_key)
         elif action == 'keyup':
-            key_name_js = data['key']
-            pg_key = map_key_to_pyautogui(key_name_js)
-            if pg_key:
-                # logger.info(f"KeyUp: JS='{key_name_js}', PyAutoGUI='{pg_key}'")
-                pyautogui.keyUp(pg_key)
-            else:
-                logger.warning(f"KeyUp: No PyAutoGUI mapping for JS key '{key_name_js}'")
-        else:
-            logger.warning(f"Received unknown command action: {action}")
-
+            pg_key = map_key_to_pyautogui(data['key'])
+            if pg_key: pyautogui.keyUp(pg_key)
+        else: logger.warning(f"CLIENT_CMD_UNKNOWN: Action: {action}")
     except Exception as e:
-        logger.error(f"Error processing command {data}: {e}", exc_info=True)
+        logger.error(f"CLIENT_CMD_ERROR: Processing command {data}: {e}", exc_info=True)
 
-
-# --- Screen Capture and Sending Function (runs in a separate thread) ---
+# --- Screen Capture and Sending Function ---
 def screen_capture_loop():
-    logger.info(f"Screen capture thread initiated. Target FPS: {CLIENT_TARGET_FPS}, JPEG Quality: {JPEG_QUALITY}")
-    
+    logger.info(f"CAPTURE_THREAD_START: Target FPS: {CLIENT_TARGET_FPS}, JPEG Quality: {JPEG_QUALITY}")
     with mss.mss() as sct:
         try:
-            # Attempt to use the primary monitor (index 1 in mss.monitors list)
             monitor_definition = sct.monitors[1]
-            logger.info(f"Capturing primary monitor: {monitor_definition}")
         except IndexError:
-            logger.warning("Primary monitor (index 1) not found. Falling back to all monitors (index 0).")
-            try:
-                monitor_definition = sct.monitors[0] # This is the combined virtual screen
-                logger.info(f"Capturing all monitors (virtual screen): {monitor_definition}")
-            except IndexError:
-                logger.error("No monitors detected by MSS. Cannot capture screen. Exiting capture thread.")
-                return # Critical error, cannot proceed
+            logger.warning("Primary monitor (idx 1) not found, using all monitors (idx 0).")
+            monitor_definition = sct.monitors[0]
+        if not monitor_definition:
+            logger.error("CAPTURE_THREAD_ERROR: No monitor definition found. Exiting capture thread.")
+            return
+
+        logger.info(f"CAPTURE_THREAD_MONITOR: Capturing: {monitor_definition}")
+        
+        last_frame_send_time = time.time()
+        target_interval = 1.0 / CLIENT_TARGET_FPS
 
         while not screen_capture_stop_event.is_set() and is_registered and sio.connected:
-            loop_start_time = time.time()
+            capture_start_time = time.time()
+            
+            # Ensure we don't send faster than target_interval (more precise than just sleep)
+            time_since_last_send = capture_start_time - last_frame_send_time
+            if time_since_last_send < target_interval:
+                sleep_for = target_interval - time_since_last_send
+                # logger.debug(f"CAPTURE_THREAD_FPS_SLEEP: Sleeping for {sleep_for:.3f}s to meet FPS target.")
+                time.sleep(sleep_for)
+                capture_start_time = time.time() # Re-evaluate start time after sleep
+
             try:
-                sct_img = sct.grab(monitor_definition) # Capture the screen
+                sct_img = sct.grab(monitor_definition)
+                capture_done_time = time.time()
+                logger.debug(f"TS_C: {capture_done_time:.3f} - CAPTURE_GRAB_TIME: {(capture_done_time - capture_start_time)*1000:.2f} ms")
 
-                # Convert MSS BGRA/RGB data to PIL Image object
-                # sct_img.rgb provides pixels in RGB order, sct_img.bgra in BGRA.
-                # Image.frombytes expects RGB.
                 img = Image.frombytes("RGB", (sct_img.width, sct_img.height), sct_img.rgb, "raw", "RGB")
-
-                # Compress to JPEG in memory
                 buffer = io.BytesIO()
                 img.save(buffer, format="JPEG", quality=JPEG_QUALITY)
                 jpeg_bytes = buffer.getvalue()
+                compress_done_time = time.time()
+                logger.debug(f"TS_C: {compress_done_time:.3f} - CAPTURE_COMPRESS_TIME: {(compress_done_time - capture_done_time)*1000:.2f} ms, Size: {len(jpeg_bytes)}")
 
                 if jpeg_bytes:
-                    sio.emit('screen_data_bytes', jpeg_bytes)
-                    # logger.debug(f"Sent frame: {len(jpeg_bytes)} bytes") # Very verbose
+                    try:
+                        sio.emit('screen_data_bytes', jpeg_bytes)
+                        emit_done_time = time.time()
+                        last_frame_send_time = emit_done_time # Update time of last successful send
+                        logger.debug(f"TS_C: {emit_done_time:.3f} - CAPTURE_EMIT_TIME: {(emit_done_time - compress_done_time)*1000:.2f} ms. Total frame time: {(emit_done_time - capture_start_time)*1000:.2f} ms")
+                    except socketio.exceptions.SocketIOError as e: # More specific exception
+                        logger.error(f"CAPTURE_THREAD_EMIT_ERROR: SocketIOError sending frame: {e}")
+                        # Potentially break or attempt reconnect if emit fails consistently
+                        time.sleep(1) # Wait before retrying emit
+                    except Exception as e:
+                        logger.error(f"CAPTURE_THREAD_EMIT_ERROR: Generic error sending frame: {e}", exc_info=True)
+                        time.sleep(1)
                 else:
-                    logger.warning("JPEG compression resulted in empty byte string.")
+                    logger.warning("CAPTURE_THREAD_EMPTY_JPEG: Compression resulted in empty bytes.")
 
             except mss.exception.ScreenShotError as e:
-                # This can happen if the screen is locked, fast user switching, etc.
-                logger.error(f"MSS ScreenShotError: {e}. Pausing capture momentarily.")
-                time.sleep(1.0) # Wait a bit before retrying
+                logger.error(f"CAPTURE_THREAD_MSS_ERROR: {e}. Pausing.")
+                time.sleep(1.0)
             except Exception as e:
-                logger.error(f"Unexpected error in screen capture loop: {e}", exc_info=True)
-                time.sleep(0.1) # Brief pause before retrying general errors
+                logger.error(f"CAPTURE_THREAD_UNEXPECTED_ERROR: {e}", exc_info=True)
+                time.sleep(0.1)
+            
+            # No additional sleep here, as FPS control is handled at the beginning of the loop
+            # elapsed_time = time.time() - capture_start_time
+            # sleep_duration = target_interval - elapsed_time
+            # if sleep_duration > 0:
+            #     time.sleep(sleep_duration)
 
-            # Calculate time to sleep to maintain target FPS
-            elapsed_time = time.time() - loop_start_time
-            sleep_duration = (1.0 / CLIENT_TARGET_FPS) - elapsed_time
-            if sleep_duration > 0:
-                time.sleep(sleep_duration)
-            # else:
-                # logger.debug(f"Frame processing took longer ({elapsed_time:.3f}s) than target interval ({1.0/CLIENT_TARGET_FPS:.3f}s). Running at max speed.")
-
-
-    logger.info("Screen capture thread has stopped.")
-
+    logger.info("CAPTURE_THREAD_STOP: Screen capture thread has stopped.")
 
 # --- Main Execution Block ---
 def main():
-    # Set current thread's name for better logging
     threading.current_thread().name = "MainThread"
-    logger.info(f"Starting Remote Control Client. Attempting to connect to: {SERVER_URL}")
+    logger.info(f"Starting Remote Client. Server: {SERVER_URL}, FPS: {CLIENT_TARGET_FPS}, Quality: {JPEG_QUALITY}")
+    if ACCESS_PASSWORD == 'change_this_password_too_server': logger.warning("USING DEFAULT CLIENT ACCESS PASSWORD!")
 
-    if ACCESS_PASSWORD == 'change_this_password_too':
-        logger.warning("USING DEFAULT ACCESS PASSWORD. This is insecure and should be changed via REMOTE_ACCESS_PASSWORD environment variable.")
-
-    global capture_thread_obj # Make sure we can access it in finally block
-
+    global capture_thread_obj
     try:
-        sio.connect(SERVER_URL, transports=['websocket'], wait_timeout=10)
-        sio.wait() # Keep the main thread alive, processing SocketIO events, until disconnect
+        sio.connect(SERVER_URL, transports=['websocket'], wait_timeout=20) # Increased wait_timeout
+        sio.wait()
     except socketio.exceptions.ConnectionError as e:
-        logger.critical(f"Could not connect to server {SERVER_URL} after multiple attempts: {e}")
+        logger.critical(f"CLIENT_MAIN_CONNECTION_ERROR: Could not connect to server {SERVER_URL}: {e}")
     except KeyboardInterrupt:
-        logger.info("Client shutdown requested (KeyboardInterrupt).")
+        logger.info("CLIENT_MAIN_SHUTDOWN_KEYBOARD: Shutdown requested.")
     finally:
-        logger.info("Initiating client shutdown sequence...")
+        logger.info("CLIENT_MAIN_SHUTDOWN_SEQ: Initiating shutdown...")
         global is_registered
-        is_registered = False # Ensure loops dependent on this flag will terminate
-        screen_capture_stop_event.set() # Signal the screen capture thread to stop
-
+        is_registered = False
+        screen_capture_stop_event.set()
         if capture_thread_obj and capture_thread_obj.is_alive():
-            logger.info("Waiting for screen capture thread to cleanly exit...")
-            capture_thread_obj.join(timeout=3.0) # Wait for up to 3 seconds
-            if capture_thread_obj.is_alive():
-                logger.warning("Screen capture thread did not exit in time.")
-
+            logger.info("CLIENT_MAIN_SHUTDOWN_SEQ: Waiting for capture thread...")
+            capture_thread_obj.join(timeout=5.0)
+            if capture_thread_obj.is_alive(): logger.warning("CLIENT_MAIN_SHUTDOWN_SEQ: Capture thread did not exit cleanly.")
         if sio.connected:
-            logger.info("Disconnecting from server...")
+            logger.info("CLIENT_MAIN_SHUTDOWN_SEQ: Disconnecting from server...")
             sio.disconnect()
-        
-        logger.info("Client has been shut down.")
+        logger.info("CLIENT_MAIN_SHUTDOWN_COMPLETE: Client has shut down.")
 
 if __name__ == '__main__':
     main()
