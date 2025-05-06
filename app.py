@@ -2,55 +2,42 @@ import eventlet
 eventlet.monkey_patch()
 
 import os
-import base64
 import time
 from flask import Flask, request, session, redirect, url_for, render_template_string
 from flask_socketio import SocketIO, emit
 from flask_socketio import disconnect as server_disconnect_client
 import traceback
 import sys
-import logging # Using Python's logging module
+import logging
 
-# --- Logging Setup ---
+# --- Logging Setup (same as before) ---
 log_format = '%(asctime)s - %(levelname)s - %(filename)s:%(lineno)d - %(message)s'
-logging.basicConfig(level=logging.INFO, format=log_format, stream=sys.stdout) # Log to stdout for Render
+logging.basicConfig(level=logging.INFO, format=log_format, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
+# --- Configuration (same as before) ---
+SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'change_this_strong_secret_key_12345_server_v2')
+ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', '1') # Ensure this matches client
 
-# --- Configuration ---
-SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'change_this_strong_secret_key_12345_server')
-ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', '1')
-
-# --- Flask App Setup ---
+# --- Flask App Setup (timeouts adjusted from previous iteration) ---
 app = Flask(__name__)
 app.config['SECRET_KEY'] = SECRET_KEY
-
-# INCREASED TIMEOUTS SIGNIFICANTLY & ASYNC TIMEOUT FOR EVENTLET
-# ping_timeout: Server closes connection if PONG not received in this time after PING.
-# ping_interval: Server sends PING every this interval.
-# Ensure ping_timeout > ping_interval
 socketio = SocketIO(app,
                     async_mode='eventlet',
-                    ping_timeout=90,  # Increased from 20 to 90 seconds
-                    ping_interval=30, # Increased from 10 to 30 seconds
-                    max_http_buffer_size=20 * 1024 * 1024, # 20MB
-                    logger=True, engineio_logger=True # Enable detailed SocketIO logging
+                    ping_timeout=90,
+                    ping_interval=30,
+                    max_http_buffer_size=20 * 1024 * 1024,
+                    logger=False, engineio_logger=False # Set to True for very verbose SocketIO debugging
                    )
 
 # --- Global Variables ---
 client_pc_sid = None
 
-# --- FPS Throttling Variables (SERVER-SIDE BROADCAST) ---
-# We will disable this for now to see if it's a major source of delay
-# TARGET_SERVER_BROADCAST_FPS = 5 # Example: Lower server broadcast rate
-# MIN_SERVER_BROADCAST_INTERVAL = 1.0 / TARGET_SERVER_BROADCAST_FPS
-# last_server_broadcast_time = 0
-
-# --- Authentication ---
+# --- Authentication (same as before) ---
 def check_auth(password):
     return password == ACCESS_PASSWORD
 
-# --- HTML Templates (LOGIN_HTML is the same, INTERFACE_HTML needs JS logging) ---
+# --- HTML Templates ---
 LOGIN_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -98,7 +85,6 @@ INTERFACE_HTML = """
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* CSS is the same as before, ensure it's included */
         html, body { height: 100%; overflow: hidden; font-family: 'Inter', sans-serif; margin: 0; padding: 0; box-sizing: border-box; }
         #screen-view img { max-width: 100%; max-height: 100%; height: auto; width: auto; display: block; cursor: crosshair; background-color: #333; object-fit: contain; }
         #screen-view { width: 100%; height: 100%; overflow: hidden; position: relative; display: flex; align-items: center; justify-content: center; }
@@ -107,9 +93,40 @@ INTERFACE_HTML = """
         .click-feedback { position: absolute; border: 2px solid red; border-radius: 50%; width: 20px; height: 20px; transform: translate(-50%, -50%) scale(0); pointer-events: none; background-color: rgba(255, 0, 0, 0.3); animation: click-pulse 0.4s ease-out forwards; }
         @keyframes click-pulse { 0% { transform: translate(-50%, -50%) scale(0.5); opacity: 1; } 100% { transform: translate(-50%, -50%) scale(2); opacity: 0; } }
         body:focus { outline: none; }
+        /* Styles for the text injection tool */
+        #text-injection-container {
+            background-color: #f3f4f6; /* gray-100 */
+            padding: 0.75rem; /* p-3 */
+            border-radius: 0.375rem; /* rounded-md */
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); /* shadow-md */
+            margin-top: 0.5rem; /* mt-2 */
+        }
+        #injection-text {
+            width: 100%;
+            min-height: 80px;
+            padding: 0.5rem;
+            border: 1px solid #d1d5db; /* gray-300 */
+            border-radius: 0.375rem;
+            font-family: monospace;
+            font-size: 0.875rem;
+        }
+        #send-injection-text-button {
+            margin-top: 0.5rem;
+            padding: 0.5rem 1rem;
+            background-color: #2563eb; /* blue-600 */
+            color: white;
+            border: none;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        #send-injection-text-button:hover {
+            background-color: #1d4ed8; /* blue-700 */
+        }
     </style>
 </head>
 <body class="bg-gray-200 flex flex-col h-screen" tabindex="0">
+
     <header class="bg-gray-800 text-white p-3 flex justify-between items-center shadow-md flex-shrink-0">
         <h1 class="text-lg font-semibold">Remote Desktop Control</h1>
         <div class="flex items-center space-x-3">
@@ -120,6 +137,7 @@ INTERFACE_HTML = """
              <a href="{{ url_for('logout') }}" class="bg-red-600 hover:bg-red-700 text-white text-xs font-medium py-1 px-2 rounded-md transition duration-150 ease-in-out">Logout</a>
         </div>
     </header>
+
     <main class="flex-grow flex p-2 gap-2 overflow-hidden">
         <div class="flex-grow bg-black rounded-lg shadow-inner flex items-center justify-center overflow-hidden" id="screen-view-container">
             <div id="screen-view">
@@ -127,20 +145,40 @@ INTERFACE_HTML = """
                        onerror="this.onerror=null; this.src='https://placehold.co/600x338/333333/CCCCCC?text=Error+Loading+Screen'; console.error('Image load error (placeholder):', this.src);">
             </div>
         </div>
+        <!-- Sidebar for controls, including text injection -->
+        <aside class="w-64 bg-white p-2 rounded-lg shadow-md flex-shrink-0 flex flex-col overflow-y-auto">
+            <h2 class="text-md font-semibold text-gray-700 mb-2">Tools</h2>
+            <div id="text-injection-container">
+                <h3 class="text-sm font-medium text-gray-600 mb-1">Text Injection</h3>
+                <p class="text-xs text-gray-500 mb-2">Client types this text on triple-Ctrl press.</p>
+                <textarea id="injection-text" placeholder="Enter text to be typed on client..."></textarea>
+                <button id="send-injection-text-button">Send Text to Client</button>
+                <p id="injection-status" class="text-xs text-green-600 mt-1"></p>
+            </div>
+            <!-- Future tools can be added here -->
+        </aside>
     </main>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const socket = io(window.location.origin, { path: '/socket.io/' });
             const screenImage = document.getElementById('screen-image');
-            // ... (other variable declarations from your original JS)
+            const screenView = document.getElementById('screen-view');
+            const connectionStatusDot = document.getElementById('status-dot');
+            const connectionStatusText = document.getElementById('status-text');
             let remoteScreenWidth = null;
             let remoteScreenHeight = null;
             let activeModifiers = { ctrl: false, shift: false, alt: false, meta: false };
             let currentImageUrl = null;
-            const connectionStatusDot = document.getElementById('status-dot');
-            const connectionStatusText = document.getElementById('status-text');
-            const screenView = document.getElementById('screen-view');
 
+            // Text Injection Elements
+            const injectionTextarea = document.getElementById('injection-text');
+            const sendInjectionTextButton = document.getElementById('send-injection-text-button');
+            const injectionStatus = document.getElementById('injection-status');
+
+
+            document.body.focus();
+            document.addEventListener('click', (e) => { if (e.target !== screenImage) { document.body.focus(); } });
 
             function updateStatus(status, message) { connectionStatusText.textContent = message; connectionStatusDot.className = `status-dot ${status}`; console.log(`UI_STATUS: ${message} (${status})`); }
             function showClickFeedback(x, y, elementRect) { const feedback = document.createElement('div'); feedback.className = 'click-feedback'; feedback.style.left = `${x}px`; feedback.style.top = `${y}px`; screenView.appendChild(feedback); setTimeout(() => { feedback.remove(); }, 400); }
@@ -151,12 +189,18 @@ INTERFACE_HTML = """
             socket.on('client_connected', (data) => { console.log(`TS: ${Date.now()} - IO: ${data.message}`); updateStatus('status-connected', 'Remote PC Connected'); document.body.focus(); });
             socket.on('client_disconnected', (data) => { console.warn(`TS: ${Date.now()} - IO: ${data.message}`); updateStatus('status-disconnected', 'Remote PC Disconnected'); if (currentImageUrl) { URL.revokeObjectURL(currentImageUrl); currentImageUrl = null; } screenImage.src = 'https://placehold.co/600x338/333333/CCCCCC?text=PC+Disconnected'; remoteScreenWidth = null; remoteScreenHeight = null; });
             socket.on('command_error', (data) => { console.error(`TS: ${Date.now()} - IO: Command Error: ${data.message}`); });
+            // New: Ack for text injection
+            socket.on('text_injection_set_ack', (data) => {
+                console.log(`TS: ${Date.now()} - IO: Text injection acknowledged by client: ${data.status}`);
+                injectionStatus.textContent = data.status === 'success' ? 'Text sent to client successfully!' : 'Failed to send text.';
+                setTimeout(() => { injectionStatus.textContent = ''; }, 3000);
+            });
+
 
             socket.on('screen_frame_bytes', (imageDataBytes) => {
-                console.log(`TS: ${Date.now()} - FRAME_RECV: Received ${imageDataBytes.byteLength} bytes.`);
+                // console.log(`TS: ${Date.now()} - FRAME_RECV: Received ${imageDataBytes.byteLength} bytes.`);
                 const blob = new Blob([imageDataBytes], { type: 'image/jpeg' });
                 const newImageUrl = URL.createObjectURL(blob);
-                console.log(`TS: ${Date.now()} - FRAME_BLOB: Blob URL created: ${newImageUrl.substring(0,50)}...`);
 
                 if (remoteScreenWidth === null || remoteScreenHeight === null) {
                     const tempImg = new Image();
@@ -176,8 +220,8 @@ INTERFACE_HTML = """
                 currentImageUrl = newImageUrl;
 
                 screenImage.onload = () => {
-                    console.log(`TS: ${Date.now()} - FRAME_LOAD: Image displayed from ${newImageUrl.substring(0,50)}...`);
-                    if (previousObjectUrl) { URL.revokeObjectURL(previousObjectUrl); /* console.log(`TS: ${Date.now()} - FRAME_REVOKE: Old blob URL revoked.`); */ }
+                    // console.log(`TS: ${Date.now()} - FRAME_LOAD: Image displayed.`);
+                    if (previousObjectUrl) { URL.revokeObjectURL(previousObjectUrl); }
                 };
                 screenImage.onerror = () => {
                      console.error(`TS: ${Date.now()} - FRAME_ERROR: Error loading image blob: ${newImageUrl}`);
@@ -185,16 +229,19 @@ INTERFACE_HTML = """
                      if (currentImageUrl === newImageUrl) { currentImageUrl = null; }
                 };
                 screenImage.src = newImageUrl;
-                console.log(`TS: ${Date.now()} - FRAME_SRC_SET: Image src set to new blob.`);
             });
 
-            // Mouse and Keyboard handlers are the same, ensure they are included
-            // ... (copy your existing mouse/keyboard JS handlers here) ...
+            // --- Mouse Handling ---
             screenImage.addEventListener('mousemove', (event) => { if (!remoteScreenWidth) return; const rect = screenImage.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const remoteX = Math.round((x / rect.width) * remoteScreenWidth); const remoteY = Math.round((y / rect.height) * remoteScreenHeight); socket.emit('control_command', { action: 'move', x: remoteX, y: remoteY }); });
             screenImage.addEventListener('click', (event) => { if (!remoteScreenWidth) return; const rect = screenImage.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const remoteX = Math.round((x / rect.width) * remoteScreenWidth); const remoteY = Math.round((y / rect.height) * remoteScreenHeight); socket.emit('control_command', { action: 'click', button: 'left', x: remoteX, y: remoteY }); showClickFeedback(x, y, rect); document.body.focus(); });
             screenImage.addEventListener('contextmenu', (event) => { event.preventDefault(); if (!remoteScreenWidth) return; const rect = screenImage.getBoundingClientRect(); const x = event.clientX - rect.left; const y = event.clientY - rect.top; const remoteX = Math.round((x / rect.width) * remoteScreenWidth); const remoteY = Math.round((y / rect.height) * remoteScreenHeight); socket.emit('control_command', { action: 'click', button: 'right', x: remoteX, y: remoteY }); showClickFeedback(x, y, rect); document.body.focus(); });
             screenImage.addEventListener('wheel', (event) => { event.preventDefault(); const deltaY = event.deltaY > 0 ? 1 : (event.deltaY < 0 ? -1 : 0); const deltaX = event.deltaX > 0 ? 1 : (event.deltaX < 0 ? -1 : 0); if (deltaY !== 0 || deltaX !== 0) { socket.emit('control_command', { action: 'scroll', dx: deltaX, dy: deltaY }); } document.body.focus(); });
+
+            // --- Keyboard Event Handling ---
+            // Important: To prevent text typed into the injection textarea from being sent as key events
             document.body.addEventListener('keydown', (event) => {
+                if (event.target === injectionTextarea) return; // Do not process keydown if focus is on textarea
+
                 if (event.key === 'Control') activeModifiers.ctrl = true; if (event.key === 'Shift') activeModifiers.shift = true; if (event.key === 'Alt') activeModifiers.alt = true; if (event.key === 'Meta') activeModifiers.meta = true;
                 let shouldPreventDefault = false; const isModifierKey = ['Control', 'Shift', 'Alt', 'Meta', 'CapsLock', 'NumLock', 'ScrollLock'].includes(event.key); const isFKey = event.key.startsWith('F') && event.key.length > 1 && !isNaN(parseInt(event.key.substring(1))); const keysToPrevent = [ 'Tab', 'Enter', 'Escape', 'Backspace', 'Delete', 'Insert', 'Home', 'End', 'PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' ' ];
                 if (event.key.length === 1 && !event.ctrlKey && !event.altKey && !event.metaKey) { shouldPreventDefault = true; } else if (keysToPrevent.includes(event.key) && !(event.altKey && event.key === 'Tab')) { shouldPreventDefault = true; }
@@ -203,6 +250,8 @@ INTERFACE_HTML = """
                 const command = { action: 'keydown', key: event.key, code: event.code, ctrlKey: event.ctrlKey, shiftKey: event.shiftKey, altKey: event.altKey, metaKey: event.metaKey }; socket.emit('control_command', command);
             });
             document.body.addEventListener('keyup', (event) => {
+                if (event.target === injectionTextarea) return; // Do not process keyup if focus is on textarea
+
                  if (event.key === 'Control') activeModifiers.ctrl = false; if (event.key === 'Shift') activeModifiers.shift = false; if (event.key === 'Alt') activeModifiers.alt = false; if (event.key === 'Meta') activeModifiers.meta = false;
                  const command = { action: 'keyup', key: event.key, code: event.code }; socket.emit('control_command', command);
             });
@@ -211,16 +260,29 @@ INTERFACE_HTML = """
                  if (activeModifiers.ctrl) { socket.emit('control_command', { action: 'keyup', key: 'Control', code: 'ControlLeft' }); activeModifiers.ctrl = false; } if (activeModifiers.shift) { socket.emit('control_command', { action: 'keyup', key: 'Shift', code: 'ShiftLeft' }); activeModifiers.shift = false; } if (activeModifiers.alt) { socket.emit('control_command', { action: 'keyup', key: 'Alt', code: 'AltLeft' }); activeModifiers.alt = false; } if (activeModifiers.meta) { socket.emit('control_command', { action: 'keyup', key: 'Meta', code: 'MetaLeft' }); activeModifiers.meta = false; }
              });
 
+            // --- Text Injection Logic ---
+            sendInjectionTextButton.addEventListener('click', () => {
+                const text = injectionTextarea.value;
+                if (text.trim() === '') {
+                    injectionStatus.textContent = 'Text is empty.';
+                    setTimeout(() => { injectionStatus.textContent = ''; }, 3000);
+                    return;
+                }
+                console.log(`TS: ${Date.now()} - UI: Sending injection text to client: "${text.substring(0,30)}..."`);
+                socket.emit('set_injection_text', { text_to_inject: text });
+                injectionStatus.textContent = 'Sending...';
+            });
 
             updateStatus('status-connecting', 'Initializing...');
             document.body.focus();
+
         }); // End DOMContentLoaded
     </script>
 </body>
 </html>
 """
 
-# --- Flask Routes (mostly same) ---
+# --- Flask Routes (same as before) ---
 @app.route('/', methods=['GET', 'POST'])
 def index():
     if request.method == 'POST':
@@ -258,14 +320,14 @@ def handle_connect():
 def handle_disconnect():
     global client_pc_sid
     sid = request.sid
-    logger.info(f"SOCKET_DISCONNECT SID: {sid}, IP: {request.remote_addr}")
+    # logger.info(f"SOCKET_DISCONNECT SID: {sid}, IP: {request.remote_addr}") # Can be noisy
     if sid == client_pc_sid:
         logger.warning(f"Remote PC (SID: {client_pc_sid}) disconnected.")
         client_pc_sid = None
         emit('client_disconnected', {'message': 'Remote PC disconnected from server.'}, broadcast=True, include_self=False)
 
 @socketio.on('register_client')
-def handle_register_client(data):
+def handle_register_client(data): # Same as before
     global client_pc_sid
     client_token = data.get('token')
     sid = request.sid
@@ -274,16 +336,10 @@ def handle_register_client(data):
     if client_token == ACCESS_PASSWORD:
         if client_pc_sid and client_pc_sid != sid:
             logger.warning(f"New Remote PC (SID: {sid}) replacing old (SID: {client_pc_sid}). Disconnecting old.")
-            try:
-                server_disconnect_client(client_pc_sid, silent=True)
-            except Exception as e:
-                logger.error(f"Error disconnecting old client {client_pc_sid}: {e}")
-        elif client_pc_sid == sid:
-            logger.info(f"Remote PC (SID: {sid}) re-registered.")
-        else:
-            logger.info(f"Remote PC (SID: {sid}) registered successfully.")
-
+            try: server_disconnect_client(client_pc_sid, silent=True)
+            except Exception as e: logger.error(f"Error disconnecting old client {client_pc_sid}: {e}")
         client_pc_sid = sid
+        logger.info(f"Remote PC (SID: {sid}) registered/re-registered successfully.")
         emit('client_connected', {'message': 'Remote PC connected to server.'}, broadcast=True, include_self=False)
         emit('registration_success', room=sid)
     else:
@@ -293,62 +349,58 @@ def handle_register_client(data):
 
 
 @socketio.on('screen_data_bytes')
-def handle_screen_data_bytes(data):
-    # global last_server_broadcast_time # Server-side throttling disabled for now
-    if request.sid != client_pc_sid:
-        logger.warning(f"SCREEN_BYTES_RECV_UNAUTH SID: {request.sid}. Ignoring.")
-        return
-
-    receive_time = time.time()
-    logger.debug(f"TS_S: {receive_time:.3f} - SCREEN_BYTES_RECV SID: {request.sid}, Size: {len(data)} bytes")
-
-    # --- SERVER-SIDE THROTTLING (DISABLED FOR NOW) ---
-    # current_time = time.time()
-    # if current_time - last_server_broadcast_time < MIN_SERVER_BROADCAST_INTERVAL:
-    #     logger.debug(f"TS_S: {current_time:.3f} - SERVER_THROTTLE_SKIP SID: {request.sid}")
-    #     return # Skip frame for server-side throttling
-
+def handle_screen_data_bytes(data): # Same as before, logging can be made less verbose
+    if request.sid != client_pc_sid: return
+    # logger.debug(f"TS_S: {time.time():.3f} - SCREEN_BYTES_RECV SID: {request.sid}, Size: {len(data)} bytes")
     try:
         if data and isinstance(data, bytes):
             emit('screen_frame_bytes', data, broadcast=True, include_self=False)
-            # last_server_broadcast_time = current_time # Part of server-side throttling
-            broadcast_time = time.time()
-            logger.debug(f"TS_S: {broadcast_time:.3f} - SCREEN_BYTES_BCAST SID: {request.sid}. Latency S_Recv->S_Bcast: {(broadcast_time - receive_time)*1000:.2f} ms")
-        else:
-            logger.warning(f"SCREEN_BYTES_INVALID SID: {request.sid}. Data not bytes or empty.")
+            # logger.debug(f"TS_S: {time.time():.3f} - SCREEN_BYTES_BCAST SID: {request.sid}.")
     except Exception as e:
         logger.error(f"Error in handle_screen_data_bytes from SID {request.sid}: {e}\n{traceback.format_exc()}")
 
 
-# Legacy screen_data handler can remain for compatibility if needed, or be removed.
-@socketio.on('screen_data')
-def handle_screen_data(data_dict):
-    if request.sid != client_pc_sid: return
-    logger.warning(f"LEGACY_SCREEN_DATA_RECV SID: {request.sid}. Client should use 'screen_data_bytes'.")
-    # ... (rest of legacy handler)
-
-
 @socketio.on('control_command')
-def handle_control_command(data):
+def handle_control_command(data): # Same as before
     if not session.get('authenticated'):
         logger.warning(f"CONTROL_CMD_UNAUTH SID: {request.sid}. No Flask session.")
         emit('command_error', {'message': 'Not authenticated to send commands.'}, room=request.sid)
         return
-
     if client_pc_sid:
-        logger.debug(f"CONTROL_CMD_SEND Action: {data.get('action')} to SID: {client_pc_sid}")
+        # logger.debug(f"CONTROL_CMD_SEND Action: {data.get('action')} to SID: {client_pc_sid}")
         emit('command', data, room=client_pc_sid)
     else:
-        logger.warning(f"CONTROL_CMD_NO_CLIENT SID: {request.sid}. Remote PC not connected.")
-        emit('command_error', {'message': 'Remote PC not connected. Cannot send command.'}, room=request.sid)
+        emit('command_error', {'message': 'Remote PC not connected.'}, room=request.sid)
+
+# --- New SocketIO Event for Text Injection ---
+@socketio.on('set_injection_text')
+def handle_set_injection_text(data):
+    if not session.get('authenticated'):
+        logger.warning(f"INJECT_TEXT_UNAUTH SID: {request.sid}. No Flask session.")
+        # Optionally send an error back to the web client
+        return
+
+    text_to_inject = data.get('text_to_inject')
+    if client_pc_sid:
+        if text_to_inject is not None: # Allow empty string to clear
+            logger.info(f"INJECT_TEXT_SEND: Sending text to SID {client_pc_sid}: '{text_to_inject[:50]}...'")
+            emit('receive_injection_text', {'text': text_to_inject}, room=client_pc_sid)
+            # Send ack back to the web client that initiated
+            emit('text_injection_set_ack', {'status': 'success'}, room=request.sid)
+        else:
+            logger.warning(f"INJECT_TEXT_SEND_FAIL: No text provided by SID {request.sid}.")
+            emit('text_injection_set_ack', {'status': 'error', 'message': 'No text provided.'}, room=request.sid)
+    else:
+        logger.warning(f"INJECT_TEXT_SEND_FAIL: Remote PC not connected. SID {request.sid} tried to send text.")
+        emit('text_injection_set_ack', {'status': 'error', 'message': 'Remote PC not connected.'}, room=request.sid)
+
 
 if __name__ == '__main__':
-    logger.info("--- Starting Flask-SocketIO Server (Optimized Phase 1) ---")
+    logger.info("--- Starting Flask-SocketIO Server (with Text Injection) ---")
     port = int(os.environ.get('PORT', 5000))
     host = '0.0.0.0'
     logger.info(f"Server listening on: http://{host}:{port}")
-    logger.info(f"SocketIO Ping Timeout: {socketio.ping_timeout}s, Ping Interval: {socketio.ping_interval}s")
-    if ACCESS_PASSWORD == 'change_this_password_too_server': logger.warning("USING DEFAULT SERVER ACCESS PASSWORD!")
-    if SECRET_KEY == 'change_this_strong_secret_key_12345_server': logger.warning("USING DEFAULT SERVER FLASK SECRET KEY!")
+    if ACCESS_PASSWORD == '1': logger.warning("USING DEFAULT SERVER ACCESS PASSWORD '1'!") # Updated default for example
+    if SECRET_KEY.startswith('change_this_strong_secret_key'): logger.warning("USING DEFAULT SERVER FLASK SECRET KEY!")
     logger.info("-------------------------------------------------------------")
-    socketio.run(app, host=host, port=port, debug=False) # debug=False for production with eventlet
+    socketio.run(app, host=host, port=port, debug=False)
