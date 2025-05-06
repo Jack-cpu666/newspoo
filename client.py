@@ -10,7 +10,7 @@ import pyautogui # type: ignore
 import platform # For OS-specific key mapping (e.g., Meta key)
 
 # --- Configuration ---
-SERVER_URL = os.environ.get('REMOTE_SERVER_URL', 'http://localhost:5000')
+SERVER_URL = os.environ.get('REMOTE_SERVER_URL', 'https://newspoogunicorn-worker-class-eventlet-w.onrender.com')
 ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', 'change_this_password_too')
 CLIENT_TARGET_FPS = int(os.environ.get('CLIENT_TARGET_FPS', 15))
 JPEG_QUALITY = int(os.environ.get('JPEG_QUALITY', 75)) # 0-100 (higher quality = larger size)
