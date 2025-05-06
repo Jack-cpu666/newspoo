@@ -1,0 +1,8 @@
+Flask>=2.0,<3.0
+Flask-SocketIO>=5.0,<6.0
+python-engineio>=4.0,<5.0
+python-socketio>=5.0,<6.0
+eventlet>=0.33.0,<0.34.0
+gunicorn>=20.0,<22.0
+Pillow>=9.0,<11.0  # Added for server-side image processing if ever needed (e.g., thumbnails - good practice)
+                  # Not strictly needed by the current server logic but harmless.
