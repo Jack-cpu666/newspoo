@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 SECRET_KEY = os.environ.get('FLASK_SECRET_KEY', 'change_this_strong_secret_key_12345_server')
-ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', 'change_this_password_too_server')
+ACCESS_PASSWORD = os.environ.get('REMOTE_ACCESS_PASSWORD', '1')
 
 # --- Flask App Setup ---
 app = Flask(__name__)
